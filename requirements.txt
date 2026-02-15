@@ -1,5 +1,6 @@
 torch
 torchvision
+torchrl
 roma
 evo
 gradio
