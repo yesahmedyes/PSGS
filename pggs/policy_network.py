@@ -79,11 +79,15 @@ class PolicyNetwork(nn.Module):
         ).to(device)
 
         # Buffers for maintaining sliding window of recent states, actions, returns
-        self.register_buffer("state_buffer", torch.zeros(sequence_length, state_dim))
         self.register_buffer(
-            "action_buffer", torch.zeros(sequence_length, num_lr_params)
+            "state_buffer", torch.zeros(sequence_length, state_dim, device=device)
         )
-        self.register_buffer("return_buffer", torch.zeros(sequence_length, 1))
+        self.register_buffer(
+            "action_buffer", torch.zeros(sequence_length, num_lr_params, device=device)
+        )
+        self.register_buffer(
+            "return_buffer", torch.zeros(sequence_length, 1, device=device)
+        )
         self.buffer_idx = 0
         self.buffer_filled = False
 

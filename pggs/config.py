@@ -15,7 +15,7 @@ class PGGSConfig:
     state_num_heads: int = 8  # Number of attention heads in state encoder.
     state_dropout: float = 0.1  # Dropout rate for state encoder.
 
-    train_state_encoder: bool = False  # Whether to train the state encoder
+    train_state_encoder: bool = True  # Whether to train the state encoder
     train_policy_network: bool = False  # Whether to train the policy network.
 
     num_lr_params: int = 6
@@ -32,6 +32,9 @@ class PGGSConfig:
 
     policy_lr: float = 3e-4
     state_encoder_lr: float = 1e-4
+    reward_prediction_lr: float = 1e-4  # Learning rate for reward prediction head
+
+    koniq_model_path: str = "koniqplusplus/pretrained_model"
     policy_weight_decay: float = 1e-5
     policy_gradient_clip: float = 1.0
 

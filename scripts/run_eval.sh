@@ -1,10 +1,12 @@
 #!/bin/bash
 
 # Change the absolute path first!
-DATA_ROOT_DIR="<Absolute_Path>/InstantSplat"
+DATA_ROOT_DIR="/home/ubuntu/ahmed-etri"
+
 OUTPUT_DIR="output_eval_XL"
+
 DATASETS=(
-    Tanks
+    tanks_templates
     # MVimgNet
 )
 
