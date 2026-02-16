@@ -30,7 +30,7 @@ N_VIEWS=(
 
 gs_train_iter=(
     1000
-    2000
+    # 2000
 )
 
 # State encoder checkpoint location
@@ -120,10 +120,10 @@ for EPOCH in $(seq 1 $EPOCHS); do
     echo "EPOCH ${EPOCH}/${EPOCHS}"
     echo "=========================================="
     
-    for DATASET in "${DATASETS[@]}"; do
-        for SCENE in "${SCENES[@]}"; do
-            for N_VIEW in "${N_VIEWS[@]}"; do
-                for gs_train_iter in "${gs_train_iter[@]}"; do
+    for N_VIEW in "${N_VIEWS[@]}"; do
+        for gs_train_iter in "${gs_train_iter[@]}"; do
+            for DATASET in "${DATASETS[@]}"; do
+                for SCENE in "${SCENES[@]}"; do
                     # Determine which checkpoint to load
                     if [ "$FIRST_SCENE" = true ]; then
                         # First scene of first epoch - no checkpoint

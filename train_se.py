@@ -90,7 +90,12 @@ def load_and_prepare_confidence(confidence_path, device="cuda", scale=(0.1, 1.0)
 
 
 class RewardPredictionHead(nn.Module):
-    def __init__(self, state_dim=771, hidden_dim1=256, hidden_dim2=128, output_dim=5):
+    """
+    MLP head that predicts reward scores from encoded state.
+    Maps 771D state encoding to 1 output: [overall_score]
+    """
+
+    def __init__(self, state_dim=771, hidden_dim1=256, hidden_dim2=128, output_dim=1):
         super().__init__()
 
         self.network = nn.Sequential(
@@ -108,7 +113,7 @@ class RewardPredictionHead(nn.Module):
         Args:
             state: Encoded state tensor [state_dim] or [batch, state_dim]
         Returns:
-            predictions: [5] or [batch, 5] tensor of predicted scores
+            predictions: [1] or [batch, 1] tensor of predicted scores
         """
         return self.network(state)
 
@@ -152,8 +157,7 @@ def evaluate_with_koniq(
         device: Device for computation
 
     Returns:
-        averaged_targets: [5] tensor containing averaged transformed scores
-            [overall_score, 1-artifacts, 1-blur, 1-contrast, 1-color]
+        averaged_targets: [1] tensor containing averaged overall_score
     """
     train_cameras = scene.getTrainCameras()
     all_scores = []
@@ -182,20 +186,13 @@ def evaluate_with_koniq(
             overall_score = koniq_output[0, 0].item() * k[0] + b[0]
             defect_scores = koniq_output[0, 1:].cpu().numpy()  # [4]
 
-            # Transform: overall_score stays as is, defect scores become (1 - defect)
-            transformed_scores = [
-                overall_score,
-                1.0 - defect_scores[0],  # 1 - artifacts
-                1.0 - defect_scores[1],  # 1 - blur
-                1.0 - defect_scores[2],  # 1 - contrast
-                1.0 - defect_scores[3],  # 1 - color
-            ]
+            # Only use overall_score
+            transformed_scores = [overall_score]
 
             all_scores.append(transformed_scores)
 
     # Average across all views
-    all_scores = np.array(all_scores)  # [num_views, 5]
-
+    all_scores = np.array(all_scores)  # [num_views, 1]
     averaged_targets = torch.tensor(
         all_scores.mean(axis=0), dtype=torch.float32, device=device
     )
@@ -227,12 +224,12 @@ def train_state_encoder_step(
         max_iterations: Maximum iterations
         avg_ssim_loss: Average SSIM loss for current phase
         avg_l1_loss: Average L1 loss for current phase
-        targets: [5] tensor of target scores from KonIQ++
+        targets: [1] tensor of target scores from KonIQ++
         device: Device for computation
 
     Returns:
         loss: MSE loss value
-        predictions: [5] tensor of predicted scores
+        predictions: [1] tensor of predicted scores
     """
     # Set models to training mode
     state_encoder.train()
@@ -248,7 +245,7 @@ def train_state_encoder_step(
     )  # [771]
 
     # Predict scores
-    predictions = prediction_head(state)  # [5]
+    predictions = prediction_head(state)  # [1]
 
     # Compute MSE loss
     loss = nn.functional.mse_loss(predictions, targets)
@@ -274,11 +271,13 @@ def training(
     train_state_encoder_override=None,
 ):
     pggs_config = PGGSConfig()
-    
+
     # Apply command line override if provided
     if train_state_encoder_override is not None:
         pggs_config.train_state_encoder = train_state_encoder_override
-        print(f"State encoder training {'enabled' if train_state_encoder_override else 'disabled'} via command line")
+        print(
+            f"State encoder training {'enabled' if train_state_encoder_override else 'disabled'} via command line"
+        )
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -346,7 +345,7 @@ def training(
             state_dim=state_encoder.get_output_dim(),
             hidden_dim1=256,
             hidden_dim2=128,
-            output_dim=5,
+            output_dim=1,
         ).to("cuda")
 
         # Initialize optimizer for state encoder + prediction head
@@ -354,22 +353,24 @@ def training(
             list(state_encoder.parameters()) + list(prediction_head.parameters()),
             lr=pggs_config.reward_prediction_lr,
         )
-        
+
         # Load state encoder checkpoint if provided
         if load_state_encoder_path and os.path.exists(load_state_encoder_path):
             print(f"Loading state encoder checkpoint from {load_state_encoder_path}...")
+
             se_checkpoint = torch.load(load_state_encoder_path, map_location="cuda")
-            state_encoder.load_state_dict(se_checkpoint['state_encoder'])
-            prediction_head.load_state_dict(se_checkpoint['prediction_head'])
-            if 'optimizer' in se_checkpoint:
-                state_encoder_optimizer.load_state_dict(se_checkpoint['optimizer'])
-            if 'phase_counter' in se_checkpoint:
-                phase_counter = se_checkpoint['phase_counter']
+            state_encoder.load_state_dict(se_checkpoint["state_encoder"])
+            prediction_head.load_state_dict(se_checkpoint["prediction_head"])
+
+            if "optimizer" in se_checkpoint:
+                state_encoder_optimizer.load_state_dict(se_checkpoint["optimizer"])
+            if "phase_counter" in se_checkpoint:
+                phase_counter = se_checkpoint["phase_counter"]
                 print(f"Resuming from phase {phase_counter}")
-            print("State encoder checkpoint loaded successfully!")
+
+            print("State encoder checkpoint loaded")
         elif load_state_encoder_path:
-            print(f"Warning: State encoder checkpoint not found at {load_state_encoder_path}")
-            print("Starting with random initialization")
+            print("Warning: State encoder checkpoint not found")
 
         # Load pretrained KonIQ++ model
         print(f"Loading KonIQ++ model from {pggs_config.koniq_model_path}...")
@@ -480,34 +481,20 @@ def training(
                     abs(predictions[0].item() - targets[0].item()),
                     iteration,
                 )
-                avg_defect_error = (
-                    torch.abs(predictions[1:] - targets[1:]).mean().item()
-                )
-                tb_writer.add_scalar(
-                    "state_encoder/avg_defect_error", avg_defect_error, iteration
-                )
                 tb_writer.add_scalar(
                     "state_encoder/phase_counter", phase_counter, iteration
                 )
 
-                # Log individual predictions and targets
-                pred_names = [
-                    "overall_score",
-                    "1-artifacts",
-                    "1-blur",
-                    "1-contrast",
-                    "1-color",
-                ]
-                for idx, name in enumerate(pred_names):
-                    tb_writer.add_scalar(
-                        f"state_encoder/prediction_{name}",
-                        predictions[idx].item(),
-                        iteration,
-                    )
-                    tb_writer.add_scalar(
-                        f"state_encoder/target_{name}", targets[idx].item(), iteration
-                    )
-            
+                # Log prediction and target
+                tb_writer.add_scalar(
+                    "state_encoder/prediction_overall_score",
+                    predictions[0].item(),
+                    iteration,
+                )
+                tb_writer.add_scalar(
+                    "state_encoder/target_overall_score", targets[0].item(), iteration
+                )
+
             # Log MSE loss to file for plotting
             loss_log_path = os.path.join(scene.model_path, "state_encoder_losses.txt")
             with open(loss_log_path, "a") as f:
@@ -789,9 +776,22 @@ if __name__ == "__main__":
     parser.add_argument("--disable_viewer", action="store_true", default=True)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
-    parser.add_argument("--load_state_encoder", type=str, default=None, help="Path to state encoder checkpoint to load")
-    parser.add_argument("--train_state_encoder", action="store_true", help="Enable state encoder training (overrides config)")
-    parser.add_argument("--no_train_state_encoder", action="store_true", help="Disable state encoder training (overrides config)")
+    parser.add_argument(
+        "--load_state_encoder",
+        type=str,
+        default=None,
+        help="Path to state encoder checkpoint to load",
+    )
+    parser.add_argument(
+        "--train_state_encoder",
+        action="store_true",
+        help="Enable state encoder training (overrides config)",
+    )
+    parser.add_argument(
+        "--no_train_state_encoder",
+        action="store_true",
+        help="Disable state encoder training (overrides config)",
+    )
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -806,14 +806,14 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    
+
     # Determine if state encoder training should be enabled
     train_se_enabled = None
     if args.train_state_encoder:
         train_se_enabled = True
     elif args.no_train_state_encoder:
         train_se_enabled = False
-    
+
     training(
         lp.extract(args),
         op.extract(args),
