@@ -270,8 +270,15 @@ def training(
     checkpoint_iterations,
     checkpoint,
     debug_from,
+    load_state_encoder_path=None,
+    train_state_encoder_override=None,
 ):
     pggs_config = PGGSConfig()
+    
+    # Apply command line override if provided
+    if train_state_encoder_override is not None:
+        pggs_config.train_state_encoder = train_state_encoder_override
+        print(f"State encoder training {'enabled' if train_state_encoder_override else 'disabled'} via command line")
 
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
@@ -347,6 +354,22 @@ def training(
             list(state_encoder.parameters()) + list(prediction_head.parameters()),
             lr=pggs_config.reward_prediction_lr,
         )
+        
+        # Load state encoder checkpoint if provided
+        if load_state_encoder_path and os.path.exists(load_state_encoder_path):
+            print(f"Loading state encoder checkpoint from {load_state_encoder_path}...")
+            se_checkpoint = torch.load(load_state_encoder_path, map_location="cuda")
+            state_encoder.load_state_dict(se_checkpoint['state_encoder'])
+            prediction_head.load_state_dict(se_checkpoint['prediction_head'])
+            if 'optimizer' in se_checkpoint:
+                state_encoder_optimizer.load_state_dict(se_checkpoint['optimizer'])
+            if 'phase_counter' in se_checkpoint:
+                phase_counter = se_checkpoint['phase_counter']
+                print(f"Resuming from phase {phase_counter}")
+            print("State encoder checkpoint loaded successfully!")
+        elif load_state_encoder_path:
+            print(f"Warning: State encoder checkpoint not found at {load_state_encoder_path}")
+            print("Starting with random initialization")
 
         # Load pretrained KonIQ++ model
         print(f"Loading KonIQ++ model from {pggs_config.koniq_model_path}...")
@@ -484,6 +507,11 @@ def training(
                     tb_writer.add_scalar(
                         f"state_encoder/target_{name}", targets[idx].item(), iteration
                     )
+            
+            # Log MSE loss to file for plotting
+            loss_log_path = os.path.join(scene.model_path, "state_encoder_losses.txt")
+            with open(loss_log_path, "a") as f:
+                f.write(f"{iteration},{phase_counter},{se_loss}\n")
 
             # Reset phase tracking
             phase_counter += 1
@@ -603,6 +631,32 @@ def training(
     end = time()
     train_time = end - start
     save_time(scene.model_path, "[2] train_joint", train_time)
+
+    # Save state encoder checkpoint after training completes
+    if pggs_config.train_state_encoder:
+        state_encoder_checkpoint = {
+            "state_encoder": state_encoder.state_dict(),
+            "prediction_head": prediction_head.state_dict(),
+            "optimizer": state_encoder_optimizer.state_dict(),
+            "phase_counter": phase_counter,
+            "config": {
+                "state_dim": state_encoder.get_output_dim(),
+                "num_inducing_vectors": pggs_config.num_inducing_vectors,
+                "state_d_model": pggs_config.state_d_model,
+                "state_num_heads": pggs_config.state_num_heads,
+                "state_dropout": pggs_config.state_dropout,
+                "sh_degree": dataset.sh_degree,
+            },
+        }
+
+        # Save to pggs folder
+        checkpoint_dir = "checkpoints"
+        os.makedirs(checkpoint_dir, exist_ok=True)
+        checkpoint_path = os.path.join(checkpoint_dir, "state_encoder_final.pth")
+
+        torch.save(state_encoder_checkpoint, checkpoint_path)
+
+        print(f"State encoder saved to: {checkpoint_path}")
 
 
 def prepare_output_and_logger(args):
@@ -735,6 +789,9 @@ if __name__ == "__main__":
     parser.add_argument("--disable_viewer", action="store_true", default=True)
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--load_state_encoder", type=str, default=None, help="Path to state encoder checkpoint to load")
+    parser.add_argument("--train_state_encoder", action="store_true", help="Enable state encoder training (overrides config)")
+    parser.add_argument("--no_train_state_encoder", action="store_true", help="Disable state encoder training (overrides config)")
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
 
@@ -749,6 +806,14 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+    
+    # Determine if state encoder training should be enabled
+    train_se_enabled = None
+    if args.train_state_encoder:
+        train_se_enabled = True
+    elif args.no_train_state_encoder:
+        train_se_enabled = False
+    
     training(
         lp.extract(args),
         op.extract(args),
@@ -758,6 +823,8 @@ if __name__ == "__main__":
         args.checkpoint_iterations,
         args.start_checkpoint,
         args.debug_from,
+        args.load_state_encoder,
+        train_se_enabled,
     )
 
     # All done
