@@ -7,14 +7,14 @@ OUTPUT_DIR="output_se_training"
 EPOCHS=20
 
 SCENES=(
-    tanks_templates::horse
-    tanks_templates::ballroom
-    tanks_templates::barn
-    tanks_templates::church
-    tanks_templates::family
-    tanks_templates::francis
-    tanks_templates::ignatius
-    tanks_templates::museum
+    tanks_templates:horse
+    tanks_templates:ballroom
+    tanks_templates:barn
+    tanks_templates:church
+    tanks_templates:family
+    tanks_templates:francis
+    tanks_templates:ignatius
+    tanks_templates:museum
     MVimgNet:bench
     MVimgNet:bicycle
     MVimgNet:car
