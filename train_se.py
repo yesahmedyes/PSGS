@@ -187,7 +187,7 @@ def evaluate_with_koniq(
             defect_scores = koniq_output[0, 1:].cpu().numpy()  # [4]
 
             # Only use overall_score
-            transformed_scores = [overall_score]
+            transformed_scores = [overall_score / 100.0]
 
             all_scores.append(transformed_scores)
 
