@@ -4,23 +4,23 @@
 DATA_ROOT_DIR="/home/ubuntu/ahmed-etri"
 
 OUTPUT_DIR="output_se_training"
-EPOCHS=20
+EPOCHS=100
 
 SCENES=(
     tanks_templates:horse
-    tanks_templates:ballroom
+    # tanks_templates:ballroom
     tanks_templates:barn
-    tanks_templates:church
+    # tanks_templates:church
     tanks_templates:family
-    tanks_templates:francis
+    # tanks_templates:francis
     tanks_templates:ignatius
-    tanks_templates:museum
+    # tanks_templates:museum
     MVimgNet:bench
-    MVimgNet:bicycle
+    # MVimgNet:bicycle
     MVimgNet:car
-    MVimgNet:chair
+    # MVimgNet:chair
     MVimgNet:ladder
-    MVimgNet:suv
+    # MVimgNet:suv
     MVimgNet:table
 )
 

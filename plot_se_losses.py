@@ -84,12 +84,11 @@ def collect_losses_per_scene(output_dir, scenes, epochs):
                 losses_per_epoch.append(None)
                 continue
 
-            # Get the final (average) MSE loss for this epoch
-            # Use the last loss value as it represents the final phase
-            final_loss = losses[-1][2]  # (iteration, phase_counter, mse_loss)
-            losses_per_epoch.append(final_loss)
+            # Get the average MSE loss across all phases for this epoch
+            avg_loss = sum(entry[2] for entry in losses) / len(losses)
+            losses_per_epoch.append(avg_loss)
 
-            print(f"Scene '{scene}' Epoch {epoch}: Final MSE Loss = {final_loss:.6f}")
+            print(f"Scene '{scene}' Epoch {epoch}: Avg MSE Loss = {avg_loss:.6f}")
 
         scene_losses[scene] = losses_per_epoch
 
