@@ -41,6 +41,7 @@ def collect_losses_per_scene(output_dir, scenes, epochs):
     """
     Collect MSE losses for each scene across all epochs.
 
+    Supports dataset:scene format (e.g. tanks_templates:horse, MVimgNet:bench).
     Returns:
         dict: {scene_name: [avg_loss_epoch1, avg_loss_epoch2, ...]}
     """
@@ -49,13 +50,19 @@ def collect_losses_per_scene(output_dir, scenes, epochs):
     for scene in scenes:
         losses_per_epoch = []
 
+        # Support dataset:scene format for path lookup
+        if ":" in scene:
+            dataset, scene_name = scene.split(":", 1)
+            path_parts = [output_dir, dataset, scene_name]
+        else:
+            path_parts = [output_dir, "*", scene]
+
         for epoch in range(1, epochs + 1):
             # Find loss file for this scene and epoch
-            # Pattern: output_dir/*/{scene}/*/epoch_{epoch}/state_encoder_losses.txt
+            # Pattern: output_dir/{dataset}/{scene}/*/epoch_{epoch}/state_encoder_losses.txt
+            #   or: output_dir/*/{scene}/*/epoch_{epoch}/state_encoder_losses.txt (legacy)
             pattern = os.path.join(
-                output_dir,
-                "*",
-                scene,
+                *path_parts,
                 "*",
                 f"epoch_{epoch}",
                 "state_encoder_losses.txt",

@@ -11,14 +11,14 @@ DATASETS=(
 )
 
 SCENES=(
-    # Family
-    Horse
-    # Ballroom
-    # Barn
-    # Church
-    # Francis
-    # Ignatius
-    # Museum
+    horse
+    ballroom
+    barn
+    church
+    family
+    francis
+    ignatius
+    museum
 
     # bench
     # bicycle

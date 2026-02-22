@@ -371,6 +371,8 @@ def training(
             print("State encoder checkpoint loaded")
         elif load_state_encoder_path:
             print("Warning: State encoder checkpoint not found")
+        else:
+            print("Initializing state encoder from scratch")
 
         # Load pretrained KonIQ++ model
         print(f"Loading KonIQ++ model from {pggs_config.koniq_model_path}...")

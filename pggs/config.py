@@ -30,9 +30,9 @@ class PGGSConfig:
     policy_attn_pdrop: float = 0.1  # Attention dropout probability for policy network.
     policy_sequence_length: int = 10  # context window.
 
-    policy_lr: float = 3e-4
-    state_encoder_lr: float = 1e-4
-    reward_prediction_lr: float = 1e-4  # Learning rate for reward prediction head
+    policy_lr: float = 1e-4
+    state_encoder_lr: float = 1e-6
+    reward_prediction_lr: float = 1e-6  # Learning rate for reward prediction head
 
     koniq_model_path: str = "koniqplusplus/pretrained_model"
     policy_weight_decay: float = 1e-5

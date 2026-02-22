@@ -6,20 +6,22 @@ DATA_ROOT_DIR="/home/ubuntu/ahmed-etri"
 OUTPUT_DIR="output_se_training"
 EPOCHS=20
 
-DATASETS=(
-    tanks_templates
-    # MVimgNet
-)
-
 SCENES=(
-    Horse
-    Family
-    Church
-    Barn
-    Ballroom
-    Francis
-    Ignatius
-    Museum
+    tanks_templates::horse
+    tanks_templates::ballroom
+    tanks_templates::barn
+    tanks_templates::church
+    tanks_templates::family
+    tanks_templates::francis
+    tanks_templates::ignatius
+    tanks_templates::museum
+    MVimgNet:bench
+    MVimgNet:bicycle
+    MVimgNet:car
+    MVimgNet:chair
+    MVimgNet:ladder
+    MVimgNet:suv
+    MVimgNet:table
 )
 
 N_VIEWS=(
@@ -34,7 +36,7 @@ gs_train_iter=(
 )
 
 # State encoder checkpoint location
-GLOBAL_CHECKPOINT="pggs/checkpoints/state_encoder_final.pth"
+GLOBAL_CHECKPOINT="checkpoints/state_encoder_final.pth"
 
 # Function: Train scene with state encoder
 train_scene_with_state_encoder() {
@@ -43,7 +45,7 @@ train_scene_with_state_encoder() {
     local SCENE=$3
     local N_VIEW=$4
     local EPOCH=$5
-    local LOAD_CHECKPOINT=$6  # Path to checkpoint to load (empty for epoch 1, scene 1)
+    local LOAD_CHECKPOINT=$6  # Path to checkpoint to load
     
     SOURCE_PATH=${DATA_ROOT_DIR}/${DATASET}/${SCENE}/24_views/
     GT_POSE_PATH=${DATA_ROOT_DIR}/${DATASET}/${SCENE}/
@@ -77,25 +79,16 @@ train_scene_with_state_encoder() {
  
     # (2) Train with state encoder
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Starting training with state encoder..."
-    
-    # Build the command
-    TRAIN_CMD="CUDA_VISIBLE_DEVICES=${GPU_ID} python ./train_se.py \
-    -s ${SOURCE_PATH} \
-    -m ${MODEL_PATH} \
-    -r 1 \
-    --n_views ${N_VIEW} \
-    --iterations ${gs_train_iter} \
-    --pp_optimizer \
-    --optim_pose"
-    
-    # Add checkpoint loading if available
-    if [ -n "$LOAD_CHECKPOINT" ] && [ -f "$LOAD_CHECKPOINT" ]; then
-        TRAIN_CMD="${TRAIN_CMD} --load_state_encoder ${LOAD_CHECKPOINT}"
-    fi
-    
-    # Execute training
-    eval "${TRAIN_CMD} > ${MODEL_PATH}/02_train_se.log 2>&1"
-    
+    CUDA_VISIBLE_DEVICES=${GPU_ID} python ./train_se.py \
+        -s ${SOURCE_PATH} \
+        -m ${MODEL_PATH} \
+        -r 1 \
+        --n_views ${N_VIEW} \
+        --iterations ${gs_train_iter} \
+        --pp_optimizer \
+        --optim_pose \
+        --load_state_encoder ${LOAD_CHECKPOINT} \
+        > ${MODEL_PATH}/02_train_se.log 2>&1
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Training completed. Log saved in ${MODEL_PATH}/02_train_se.log"
 
     echo "======================================================="
@@ -111,8 +104,7 @@ echo "Scenes: ${SCENES[@]}"
 echo "=========================================="
 
 # Track current global checkpoint
-CURRENT_CHECKPOINT=""
-FIRST_SCENE=true
+CURRENT_CHECKPOINT="${GLOBAL_CHECKPOINT}"
 
 for EPOCH in $(seq 1 $EPOCHS); do
     echo ""
@@ -122,30 +114,25 @@ for EPOCH in $(seq 1 $EPOCHS); do
     
     for N_VIEW in "${N_VIEWS[@]}"; do
         for gs_train_iter in "${gs_train_iter[@]}"; do
-            for DATASET in "${DATASETS[@]}"; do
-                for SCENE in "${SCENES[@]}"; do
-                    # Determine which checkpoint to load
-                    if [ "$FIRST_SCENE" = true ]; then
-                        # First scene of first epoch - no checkpoint
-                        LOAD_CHKPT=""
-                        FIRST_SCENE=false
-                    else
-                        # All other scenes - load from previous scene
-                        LOAD_CHKPT="${CURRENT_CHECKPOINT}"
-                    fi
-                    
-                    # Train scene (sequential execution - GPU 0)
-                    train_scene_with_state_encoder \
-                        0 \
-                        "$DATASET" \
-                        "$SCENE" \
-                        "$N_VIEW" \
-                        "$EPOCH" \
-                        "$LOAD_CHKPT"
-                    
-                    # Update global checkpoint to the one just saved
-                    CURRENT_CHECKPOINT="${GLOBAL_CHECKPOINT}"
-                done
+            for DATASET_SCENE in "${SCENES[@]}"; do
+                # Parse dataset:scene format
+                DATASET="${DATASET_SCENE%%:*}"
+                SCENE="${DATASET_SCENE#*:}"
+                
+                # Load from current checkpoint
+                LOAD_CHKPT="${CURRENT_CHECKPOINT}"
+                
+                # Train scene (sequential execution - GPU 0)
+                train_scene_with_state_encoder \
+                    0 \
+                    "$DATASET" \
+                    "$SCENE" \
+                    "$N_VIEW" \
+                    "$EPOCH" \
+                    "$LOAD_CHKPT"
+                
+                # Update global checkpoint to the one just saved
+                CURRENT_CHECKPOINT="${GLOBAL_CHECKPOINT}"
             done
         done
     done
@@ -160,7 +147,7 @@ echo "=========================================="
 PLOTS_DIR="${OUTPUT_DIR}/plots"
 mkdir -p ${PLOTS_DIR}
 
-python scripts/plot_state_encoder_losses.py \
+python plot_se_losses.py \
     --output_dir ${OUTPUT_DIR} \
     --epochs ${EPOCHS} \
     --plots_dir ${PLOTS_DIR} \
