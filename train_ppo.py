@@ -12,7 +12,6 @@ import sys
 import uuid
 from collections import namedtuple
 from random import randint
-from time import time
 from typing import List, Optional, Tuple
 
 import numpy as np
@@ -20,8 +19,6 @@ import torch
 import torch.nn as nn
 from argparse import ArgumentParser, Namespace
 from torchvision.transforms.functional import resize, normalize
-from tqdm import tqdm
-
 from pggs.config import PGGSConfig
 
 from arguments import ModelParams, PipelineParams, OptimizationParams
@@ -29,19 +26,20 @@ from gaussian_renderer import render
 from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 from utils.loss_utils import l1_loss, ssim
-from utils.pose_utils import get_camera_from_tensor
 from pggs.state_encoder import StateEncoder
 from pggs.ppo_policy import PPOActorCritic
 from pggs.utils import apply_lr_scaling
 
 try:
     from torch.utils.tensorboard import SummaryWriter
+
     TENSORBOARD_FOUND = True
 except ImportError:
     TENSORBOARD_FOUND = False
 
 try:
     from fused_ssim import fused_ssim
+
     FUSED_SSIM_AVAILABLE = True
 except Exception:
     FUSED_SSIM_AVAILABLE = False
@@ -54,17 +52,17 @@ except Exception:
 Transition = namedtuple(
     "Transition",
     [
-        "state",              # [state_dim]  encoded state (used when train_se=False)
+        "state",  # [state_dim]  encoded state (used when train_se=False)
         "gaussian_features",  # [N, feat_dim] or None (stored when train_se=True)
-        "context",            # [3] or None (iter_norm, ssim, l1; used when train_se=True)
-        "iteration",          # int  (for re-encoding; used when train_se=True)
-        "max_iterations",     # int
-        "action",             # [action_dim]
-        "log_prob",           # scalar
-        "value",              # scalar
-        "reward",             # scalar
-        "done",               # bool
-        "init_hidden",        # GRU hidden at start of this step, or None
+        "context",  # [3] or None (iter_norm, ssim, l1; used when train_se=True)
+        "iteration",  # int  (for re-encoding; used when train_se=True)
+        "max_iterations",  # int
+        "action",  # [action_dim]
+        "log_prob",  # scalar
+        "value",  # scalar
+        "reward",  # scalar
+        "done",  # bool
+        "init_hidden",  # GRU hidden at start of this step, or None
     ],
 )
 
@@ -72,6 +70,7 @@ Transition = namedtuple(
 # ──────────────────────────────────────────────────────────────────────────────
 # KonIQ++ helpers  (mirrored from train_se.py)
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def _preprocess_image_for_koniq(image_tensor: torch.Tensor) -> torch.Tensor:
     """Resize and normalize [3, H, W] image for KonIQ++."""
@@ -121,6 +120,7 @@ def evaluate_with_koniq(
 # ──────────────────────────────────────────────────────────────────────────────
 # Rollout collection
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def run_episode(
     dataset,
@@ -187,7 +187,6 @@ def run_episode(
     viewpoint_indices = list(range(len(viewpoint_stack)))
 
     for iteration in range(1, opt.iterations + 1):
-
         gaussians.update_learning_rate(iteration)
 
         if not opt.optim_pose:
@@ -207,9 +206,7 @@ def run_episode(
                 else 0.0
             )
             avg_l1 = (
-                sum(phase_l1_losses) / len(phase_l1_losses)
-                if phase_l1_losses
-                else 0.0
+                sum(phase_l1_losses) / len(phase_l1_losses) if phase_l1_losses else 0.0
             )
 
             # ── Encode state ──────────────────────────────────────────────────
@@ -225,8 +222,7 @@ def run_episode(
             # Store raw Gaussian features if encoder will be fine-tuned
             if train_state_encoder:
                 gauss_features = (
-                    state_encoder.gaussian_encoder
-                    ._extract_gaussian_features(gaussians)
+                    state_encoder.gaussian_encoder._extract_gaussian_features(gaussians)
                     .detach()
                     .cpu()
                 )
@@ -243,9 +239,7 @@ def run_episode(
                 ctx = None
 
             # ── Sample action ─────────────────────────────────────────────────
-            stored_hidden = (
-                hidden.detach().clone() if hidden is not None else None
-            )
+            stored_hidden = hidden.detach().clone() if hidden is not None else None
 
             with torch.no_grad():
                 action, log_prob, value, hidden = policy.get_action_and_value(
@@ -260,7 +254,7 @@ def run_episode(
             )
 
             # ── Reward ────────────────────────────────────────────────────────
-            done = (iteration == opt.iterations)
+            done = iteration == opt.iterations
             reward = evaluate_with_koniq(
                 gaussians=gaussians,
                 scene=scene,
@@ -285,7 +279,9 @@ def run_episode(
                     value=value.detach().cpu(),
                     reward=reward,
                     done=done,
-                    init_hidden=stored_hidden.cpu() if stored_hidden is not None else None,
+                    init_hidden=stored_hidden.cpu()
+                    if stored_hidden is not None
+                    else None,
                 )
             )
 
@@ -304,11 +300,7 @@ def run_episode(
         viewpoint_indices.pop(rand_idx)
         pose = gaussians.get_RT(viewpoint_cam.uid)
 
-        bg = (
-            torch.rand((3,), device=device)
-            if opt.random_background
-            else background
-        )
+        bg = torch.rand((3,), device=device) if opt.random_background else background
         render_pkg = render(viewpoint_cam, gaussians, pipe, bg, camera_pose=pose)
         image = render_pkg["render"]
 
@@ -351,6 +343,7 @@ def run_episode(
 # GAE and PPO update
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 def compute_gae(
     rollout: List[Transition],
     gamma: float = 0.99,
@@ -374,7 +367,11 @@ def compute_gae(
     for t in reversed(range(T)):
         next_value = 0.0 if t == T - 1 else values[t + 1].item()
         next_done = dones[t].item()
-        delta = rewards[t].item() + gamma * next_value * (1.0 - next_done) - values[t].item()
+        delta = (
+            rewards[t].item()
+            + gamma * next_value * (1.0 - next_done)
+            - values[t].item()
+        )
         last_gae = delta + gamma * gae_lambda * (1.0 - next_done) * last_gae
         advantages[t] = last_gae
 
@@ -395,8 +392,12 @@ def ppo_update(
     """
     Perform PPO update over the collected rollout.
 
-    When train_state_encoder=True, Gaussian features are re-encoded inside the
-    update loop so gradients flow into the state encoder.
+    The full episode sequence is passed through the backbone once per PPO epoch,
+    preserving GRU hidden-state propagation and causal attention ordering. No
+    minibatching — a single backward pass covers all T transitions.
+
+    When train_state_encoder=True, the state tensor is rebuilt each PPO epoch so
+    fresh gradients flow through the encoder on every step.
 
     Returns:
         dict with scalar loss values for logging.
@@ -414,7 +415,6 @@ def ppo_update(
     if pggs_config.use_reward_normalization and T > 1:
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-    # Precompute states (re-encode if needed)
     if train_state_encoder:
         state_encoder.train()
     else:
@@ -422,105 +422,73 @@ def ppo_update(
 
     policy.train()
 
-    # Collect tensors once (states will be re-computed inside if train_se=True)
-    old_log_probs = torch.stack([t.log_prob for t in rollout]).to(device)
-    old_actions = torch.stack([t.action for t in rollout]).to(device)
+    old_log_probs = torch.stack([t.log_prob for t in rollout]).to(device)  # [T]
+    old_actions = torch.stack([t.action for t in rollout]).to(device)      # [T, action_dim]
     advantages_d = advantages.to(device)
     returns_d = returns.to(device)
 
-    # For GRU: we keep the initial hidden of the episode (first transition)
+    # Initial GRU hidden state for the episode (None for Transformer)
     episode_init_hidden = rollout[0].init_hidden
     if episode_init_hidden is not None:
         episode_init_hidden = episode_init_hidden.to(device)
 
+    # When encoder is frozen the state sequence is identical every epoch —
+    # build it once outside the loop.
+    if not train_state_encoder:
+        all_states = torch.stack([t.state for t in rollout]).to(device)  # [T, state_dim]
+
     total_policy_loss = 0.0
     total_value_loss = 0.0
     total_entropy = 0.0
-    n_updates = 0
 
     for _ in range(pggs_config.ppo_epochs):
-        indices = torch.randperm(T)
+        # ── Full-sequence forward pass ─────────────────────────────────────────
+        # When fine-tuning the encoder, rebuild the state tensor so updated
+        # encoder weights contribute fresh gradients each epoch.
+        if train_state_encoder:
+            all_states = _build_all_states(rollout, state_encoder, device)
 
-        for start in range(0, T, pggs_config.ppo_minibatch_size):
-            mb_idx = indices[start : start + pggs_config.ppo_minibatch_size]
+        log_probs_all, values_all, entropy = policy.evaluate_actions(
+            all_states, old_actions, init_hidden=episode_init_hidden
+        )
 
-            # ── Build state batch (potentially re-encoding) ───────────────────
-            if train_state_encoder:
-                states_list = []
-                for idx in mb_idx.tolist():
-                    t = rollout[idx]
-                    gf = t.gaussian_features.to(device)   # [N, feat_dim]
-                    ctx = t.context.to(device)             # [3]
-                    # Re-run encoder: embed -> cross-attention -> pool
-                    gauss_state = _run_gaussian_encoder(state_encoder, gf)
-                    if state_encoder.use_context:
-                        s = torch.cat([gauss_state, ctx], dim=0)
-                    else:
-                        s = gauss_state
-                    states_list.append(s)
-                mb_states = torch.stack(states_list)      # [mb, state_dim]
-            else:
-                mb_states = torch.stack(
-                    [rollout[i.item()].state for i in mb_idx]
-                ).to(device)
+        # ── Full-sequence PPO loss (single backward) ───────────────────────────
+        ratio = torch.exp(log_probs_all - old_log_probs.detach())
+        surr1 = ratio * advantages_d
+        surr2 = torch.clamp(
+            ratio,
+            1.0 - pggs_config.ppo_clip_epsilon,
+            1.0 + pggs_config.ppo_clip_epsilon,
+        ) * advantages_d
+        policy_loss = -torch.min(surr1, surr2).mean()
+        value_loss = nn.functional.mse_loss(values_all, returns_d)
+        total_loss = (
+            policy_loss
+            + pggs_config.ppo_value_coeff * value_loss
+            - pggs_config.ppo_entropy_coeff * entropy
+        )
 
-            mb_old_log_probs = old_log_probs[mb_idx]
-            mb_old_actions = old_actions[mb_idx]
-            mb_advantages = advantages_d[mb_idx]
-            mb_returns = returns_d[mb_idx]
+        policy_optimizer.zero_grad()
+        if state_encoder_optimizer is not None:
+            state_encoder_optimizer.zero_grad()
 
-            # ── Forward pass ──────────────────────────────────────────────────
-            # For GRU minibatches we process each sample independently
-            # (no hidden state passed) — acceptable since the policy acts on
-            # individual steps and the GRU history is already baked into the
-            # collected states via the rollout hidden states.
-            log_probs, values, entropy = policy.evaluate_actions(
-                mb_states, mb_old_actions, init_hidden=None
-            )
+        total_loss.backward()
 
-            # ── PPO losses ────────────────────────────────────────────────────
-            ratio = torch.exp(log_probs - mb_old_log_probs.detach())
-            surr1 = ratio * mb_advantages
-            surr2 = (
-                torch.clamp(
-                    ratio,
-                    1.0 - pggs_config.ppo_clip_epsilon,
-                    1.0 + pggs_config.ppo_clip_epsilon,
-                )
-                * mb_advantages
-            )
-            policy_loss = -torch.min(surr1, surr2).mean()
-            value_loss = nn.functional.mse_loss(values, mb_returns)
-            total_loss = (
-                policy_loss
-                + pggs_config.ppo_value_coeff * value_loss
-                - pggs_config.ppo_entropy_coeff * entropy
-            )
-
-            policy_optimizer.zero_grad()
-            if state_encoder_optimizer is not None:
-                state_encoder_optimizer.zero_grad()
-
-            total_loss.backward()
-
+        nn.utils.clip_grad_norm_(policy.parameters(), pggs_config.policy_gradient_clip)
+        if train_state_encoder:
             nn.utils.clip_grad_norm_(
-                policy.parameters(), pggs_config.policy_gradient_clip
+                state_encoder.parameters(), pggs_config.policy_gradient_clip
             )
-            if train_state_encoder:
-                nn.utils.clip_grad_norm_(
-                    state_encoder.parameters(), pggs_config.policy_gradient_clip
-                )
 
-            policy_optimizer.step()
-            if state_encoder_optimizer is not None:
-                state_encoder_optimizer.step()
+        policy_optimizer.step()
+        if state_encoder_optimizer is not None:
+            state_encoder_optimizer.step()
 
-            total_policy_loss += policy_loss.item()
-            total_value_loss += value_loss.item()
-            total_entropy += entropy.item()
-            n_updates += 1
+        total_policy_loss += policy_loss.item()
+        total_value_loss += value_loss.item()
+        total_entropy += entropy.item()
 
-    n = max(n_updates, 1)
+    n = max(pggs_config.ppo_epochs, 1)
     return {
         "policy_loss": total_policy_loss / n,
         "value_loss": total_value_loss / n,
@@ -549,7 +517,7 @@ def _run_gaussian_encoder(
 
     # Cross-attention with inducing vectors
     queries = enc.inducing_vectors.unsqueeze(0)  # [1, K, d_model]
-    keys_values = embedded.unsqueeze(0)          # [1, N, d_model]
+    keys_values = embedded.unsqueeze(0)  # [1, N, d_model]
     attn_output, _ = enc.cross_attention(
         query=queries, key=keys_values, value=keys_values
     )  # [1, K, d_model]
@@ -562,9 +530,45 @@ def _run_gaussian_encoder(
     return torch.cat([max_pooled, min_pooled, mean_pooled], dim=0)  # [3 * d_model]
 
 
+def _build_all_states(
+    rollout: "List[Transition]",
+    state_encoder: "StateEncoder",
+    device: str,
+) -> "torch.Tensor":
+    """
+    Build the full ordered state sequence [T, state_dim] for an episode rollout,
+    re-encoding Gaussian features through the state encoder so gradients can flow
+    into it when fine-tuning.
+
+    Used by ppo_update when train_state_encoder=True, replacing the previous
+    per-minibatch re-encoding loop.
+
+    Args:
+        rollout:       List of Transition namedtuples in episode order.
+        state_encoder: StateEncoder instance (should already be in .train() mode).
+        device:        Target device string.
+
+    Returns:
+        Tensor of shape [T, state_dim] on `device`, with gradients attached.
+    """
+    states = []
+    for t in rollout:
+        gf = t.gaussian_features.to(device)  # [N, feat_dim]
+        ctx = t.context.to(device)  # [3]
+        gauss_state = _run_gaussian_encoder(state_encoder, gf)  # [3 * d_model]
+        s = (
+            torch.cat([gauss_state, ctx], dim=0)
+            if state_encoder.use_context
+            else gauss_state
+        )
+        states.append(s)
+    return torch.stack(states)  # [T, state_dim]
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Outer training loop
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 def prepare_output_and_logger(args):
     if not args.model_path:
@@ -588,34 +592,44 @@ def training_ppo(
     dataset,
     opt,
     pipe,
-    num_episodes: int,
-    scene_list: Optional[List[str]],
     policy_backbone: str,
     use_context: bool,
     train_state_encoder_flag: bool,
     load_state_encoder_path: Optional[str],
     load_ppo_policy_path: Optional[str],
+    log_dir: str,
+    episode: int,
+    epoch: int,
     tb_writer,
     state_encoder_lr_override: Optional[float] = None,
     device: str = "cuda",
 ):
     """
-    Outer PPO training loop.
+    Run exactly one PPO episode for the scene described by `dataset`.
+
+    The shell script drives all loops (epoch / n_views / gs_train_iter / scene).
+    This function:
+        1. Loads policy + state encoder from checkpoints (if available)
+        2. Runs one Gaussian training episode and collects rollout
+        3. Performs PPO update
+        4. Appends one row to {log_dir}/ppo_losses.csv
+        5. Saves updated checkpoints (always)
 
     Args:
-        dataset:               Dataset params (from ModelParams.extract)
-        opt:                   Optimisation params
-        pipe:                  Pipeline params
-        num_episodes:          Number of PPO episodes
-        scene_list:            List of additional source_paths; if provided,
-                               episodes cycle through these scenes. If None,
-                               the single dataset.source_path is used.
-        policy_backbone:       "gru" or "transformer"
-        use_context:           Whether to include context scalars in state
+        dataset:                  Dataset params (source_path, model_path, etc.)
+        opt:                      Optimisation params
+        pipe:                     Pipeline params
+        policy_backbone:          "gru" or "transformer"
+        use_context:              Whether to include context scalars in state
         train_state_encoder_flag: Whether to fine-tune the state encoder
         load_state_encoder_path:  Checkpoint path or None
         load_ppo_policy_path:     Checkpoint path or None
-        tb_writer:             TensorBoard SummaryWriter or None
+        log_dir:                  Shared directory for ppo_losses.csv / TensorBoard
+        episode:                  Global episode counter (passed by shell)
+        epoch:                    Current epoch number (passed by shell)
+        tb_writer:                TensorBoard SummaryWriter or None
+        state_encoder_lr_override: Override for pggs_config.state_encoder_lr
+        device:                   Torch device string
     """
     pggs_config = PGGSConfig()
     pggs_config.policy_backbone = policy_backbone
@@ -668,17 +682,6 @@ def training_ppo(
         device=device,
     )
 
-    if load_ppo_policy_path and os.path.exists(load_ppo_policy_path):
-        print(f"Loading PPO policy from {load_ppo_policy_path}")
-        ckpt = torch.load(load_ppo_policy_path, map_location=device)
-        policy_key = "policy" if "policy" in ckpt else None
-        policy.load_state_dict(ckpt[policy_key] if policy_key else ckpt)
-        print("PPO policy loaded.")
-    else:
-        if load_ppo_policy_path:
-            print(f"Warning: PPO policy checkpoint not found at {load_ppo_policy_path}")
-        print("Initialising PPO policy from scratch.")
-
     # ── Optimisers ────────────────────────────────────────────────────────────
     policy_optimizer = torch.optim.Adam(
         policy.parameters(),
@@ -693,6 +696,30 @@ def training_ppo(
             lr=pggs_config.state_encoder_lr,
         )
 
+    # Load policy weights + optimizer state (Adam momentum carries across calls)
+    if load_ppo_policy_path and os.path.exists(load_ppo_policy_path):
+        print(f"Loading PPO policy from {load_ppo_policy_path}")
+        ckpt = torch.load(load_ppo_policy_path, map_location=device)
+        policy_key = "policy" if "policy" in ckpt else None
+        policy.load_state_dict(ckpt[policy_key] if policy_key else ckpt)
+        if "optimizer" in ckpt:
+            policy_optimizer.load_state_dict(ckpt["optimizer"])
+        print("PPO policy loaded.")
+    else:
+        if load_ppo_policy_path:
+            print(f"Warning: PPO policy checkpoint not found at {load_ppo_policy_path}")
+        print("Initialising PPO policy from scratch.")
+
+    # Load state encoder optimizer state (only relevant when fine-tuning)
+    if (
+        train_state_encoder_flag
+        and load_state_encoder_path
+        and os.path.exists(load_state_encoder_path)
+    ):
+        ckpt_se = torch.load(load_state_encoder_path, map_location=device)
+        if "optimizer" in ckpt_se and ckpt_se["optimizer"] is not None:
+            state_encoder_optimizer.load_state_dict(ckpt_se["optimizer"])
+
     # ── KonIQ++ model ─────────────────────────────────────────────────────────
     from koniqplusplus.IQAmodel import Model_Joint
 
@@ -705,131 +732,81 @@ def training_ppo(
     koniq_model.eval()
     print("KonIQ++ loaded.")
 
-    # ── Scene list ────────────────────────────────────────────────────────────
-    if not scene_list:
-        scene_list = [dataset.source_path]
-    n_scenes = len(scene_list)
+    # ── Single episode ────────────────────────────────────────────────────────
+    print(f"\n{'=' * 60}")
+    print(f"Episode {episode}  Epoch {epoch}  scene: {dataset.source_path}")
+    print(f"{'=' * 60}")
 
-    # ── CSV loss log ──────────────────────────────────────────────────────────
-    csv_path = os.path.join(dataset.model_path, "ppo_losses.csv")
-    os.makedirs(dataset.model_path, exist_ok=True)
-    with open(csv_path, "w") as _f:
-        _f.write("episode,epoch,scene,policy_loss,value_loss,entropy,final_reward\n")
+    rollout, final_reward = run_episode(
+        dataset=dataset,
+        opt=opt,
+        pipe=pipe,
+        pggs_config=pggs_config,
+        state_encoder=state_encoder,
+        policy=policy,
+        koniq_model=koniq_model,
+        koniq_k=koniq_k,
+        koniq_b=koniq_b,
+        train_state_encoder=train_state_encoder_flag,
+        device=device,
+    )
 
-    # ── Episode loop ──────────────────────────────────────────────────────────
-    progress_bar = tqdm(range(num_episodes), desc="PPO episodes")
+    print(f"  {len(rollout)} phases collected, final KonIQ++ reward = {final_reward:.4f}")
 
-    for episode in range(num_episodes):
-        scene_path = scene_list[episode % len(scene_list)]
-        # Swap source path for this episode if cycling scenes
-        episode_dataset = _clone_dataset_with_scene(dataset, scene_path)
-
-        print(
-            f"\n{'='*60}\nEpisode {episode + 1}/{num_episodes}  "
-            f"scene: {scene_path}\n{'='*60}"
-        )
-
-        rollout, final_reward = run_episode(
-            dataset=episode_dataset,
-            opt=opt,
-            pipe=pipe,
-            pggs_config=pggs_config,
-            state_encoder=state_encoder,
+    losses = {}
+    if len(rollout) > 0:
+        losses = ppo_update(
             policy=policy,
-            koniq_model=koniq_model,
-            koniq_k=koniq_k,
-            koniq_b=koniq_b,
+            state_encoder=state_encoder,
+            policy_optimizer=policy_optimizer,
+            state_encoder_optimizer=state_encoder_optimizer,
+            rollout=rollout,
+            pggs_config=pggs_config,
             train_state_encoder=train_state_encoder_flag,
             device=device,
         )
-
         print(
-            f"  Episode {episode + 1}: {len(rollout)} phases, "
-            f"final KonIQ++ reward = {final_reward:.4f}"
+            f"  PPO update — policy_loss: {losses.get('policy_loss', 0):.4f}  "
+            f"value_loss: {losses.get('value_loss', 0):.4f}  "
+            f"entropy: {losses.get('entropy', 0):.4f}"
         )
 
-        losses = {}
-        if len(rollout) > 0:
-            losses = ppo_update(
-                policy=policy,
-                state_encoder=state_encoder,
-                policy_optimizer=policy_optimizer,
-                state_encoder_optimizer=state_encoder_optimizer,
-                rollout=rollout,
-                pggs_config=pggs_config,
-                train_state_encoder=train_state_encoder_flag,
-                device=device,
-            )
-            print(
-                f"  PPO update — policy_loss: {losses.get('policy_loss', 0):.4f}  "
-                f"value_loss: {losses.get('value_loss', 0):.4f}  "
-                f"entropy: {losses.get('entropy', 0):.4f}"
-            )
+    if tb_writer:
+        tb_writer.add_scalar("ppo/final_reward", final_reward, episode)
+        tb_writer.add_scalar("ppo/n_phases", len(rollout), episode)
+        for k, v in losses.items():
+            tb_writer.add_scalar(f"ppo/{k}", v, episode)
 
-        if tb_writer:
-            tb_writer.add_scalar("ppo/final_reward", final_reward, episode)
-            tb_writer.add_scalar("ppo/n_phases", len(rollout), episode)
-            for k, v in losses.items():
-                tb_writer.add_scalar(f"ppo/{k}", v, episode)
+    # ── CSV logging (append; header on first call) ────────────────────────────
+    os.makedirs(log_dir, exist_ok=True)
+    csv_path = os.path.join(log_dir, "ppo_losses.csv")
+    write_header = not os.path.exists(csv_path)
+    # Scene label: last two path components of source_path, e.g. tanks_templates/horse
+    src_parts = os.path.normpath(dataset.source_path).split(os.sep)
+    scene_label = "/".join(src_parts[-2:]) if len(src_parts) >= 2 else src_parts[-1]
+    with open(csv_path, "a") as _f:
+        if write_header:
+            _f.write("episode,epoch,scene,policy_loss,value_loss,entropy,final_reward\n")
+        _f.write(
+            f"{episode},{epoch},{scene_label},"
+            f"{losses.get('policy_loss', float('nan')):.6f},"
+            f"{losses.get('value_loss', float('nan')):.6f},"
+            f"{losses.get('entropy', float('nan')):.6f},"
+            f"{final_reward:.6f}\n"
+        )
 
-        # ── CSV logging ────────────────────────────────────────────────────────
-        epoch = episode // n_scenes + 1
-        # Derive a short readable label from the scene path entry, e.g.
-        # "/data/tanks_templates:output/horse" → "tanks_templates/horse"
-        raw_label = scene_path
-        if ":" in raw_label:
-            parts = raw_label.split(":", 1)
-            scene_label = "/".join(os.path.normpath(p).split(os.sep)[-1] for p in parts)
-        else:
-            components = os.path.normpath(raw_label).split(os.sep)
-            scene_label = "/".join(components[-2:]) if len(components) >= 2 else components[-1]
-        with open(csv_path, "a") as _f:
-            _f.write(
-                f"{episode + 1},{epoch},{scene_label},"
-                f"{losses.get('policy_loss', float('nan')):.6f},"
-                f"{losses.get('value_loss', float('nan')):.6f},"
-                f"{losses.get('entropy', float('nan')):.6f},"
-                f"{final_reward:.6f}\n"
-            )
+    # ── Save checkpoints (always — shell relies on this for the next call) ────
+    _save_checkpoints(
+        policy=policy,
+        state_encoder=state_encoder,
+        policy_optimizer=policy_optimizer,
+        state_encoder_optimizer=state_encoder_optimizer,
+        episode=episode,
+        pggs_config=pggs_config,
+        train_se=train_state_encoder_flag,
+    )
 
-        progress_bar.update(1)
-
-        # ── Checkpointing ──────────────────────────────────────────────────────
-        save_every = max(1, num_episodes // 10)
-        if (episode + 1) % save_every == 0 or episode == num_episodes - 1:
-            _save_checkpoints(
-                policy=policy,
-                state_encoder=state_encoder,
-                policy_optimizer=policy_optimizer,
-                state_encoder_optimizer=state_encoder_optimizer,
-                episode=episode,
-                pggs_config=pggs_config,
-                train_se=train_state_encoder_flag,
-            )
-
-    progress_bar.close()
-    print("\nPPO training complete.")
-
-
-def _clone_dataset_with_scene(dataset, entry: str):
-    """
-    Return a shallow copy of dataset with updated source_path (and optionally
-    model_path).
-
-    entry can be either:
-        "source_path"               — only source_path is updated
-        "source_path:model_path"    — both source_path and model_path updated
-                                      (required when init_geo was pre-run per scene)
-    """
-    import copy
-    d = copy.copy(dataset)
-    if ":" in entry:
-        source, model = entry.split(":", 1)
-        d.source_path = os.path.abspath(source)
-        d.model_path = os.path.abspath(model)
-    else:
-        d.source_path = os.path.abspath(entry)
-    return d
+    print("\nEpisode complete.")
 
 
 def _save_checkpoints(
@@ -857,17 +834,15 @@ def _save_checkpoints(
     if train_se:
         se_ckpt = {
             "state_encoder": state_encoder.state_dict(),
-            "optimizer": state_encoder_optimizer.state_dict() if state_encoder_optimizer else None,
+            "optimizer": state_encoder_optimizer.state_dict()
+            if state_encoder_optimizer
+            else None,
             "episode": episode,
             "use_context": pggs_config.use_context,
         }
         torch.save(se_ckpt, pggs_config.state_encoder_checkpoint)
         print(f"  State encoder saved → {pggs_config.state_encoder_checkpoint}")
 
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Entry point
-# ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="PPO policy training for PGGS")
@@ -920,20 +895,25 @@ if __name__ == "__main__":
         help="Path to pre-trained PPO policy checkpoint",
     )
     parser.add_argument(
-        "--num_episodes",
-        type=int,
-        default=100,
-        help="Number of PPO episodes to train",
+        "--log_dir",
+        type=str,
+        required=True,
+        help=(
+            "Shared output directory for ppo_losses.csv and TensorBoard logs. "
+            "Rows are appended each call; the header is written only on the first call."
+        ),
     )
     parser.add_argument(
-        "--scene_list",
-        nargs="+",
-        type=str,
-        default=None,
-        help=(
-            "List of scene source_path directories to cycle through during "
-            "training. If omitted, uses --source_path for all episodes."
-        ),
+        "--episode",
+        type=int,
+        default=1,
+        help="Global episode counter (set by the shell script loop)",
+    )
+    parser.add_argument(
+        "--epoch",
+        type=int,
+        default=1,
+        help="Current epoch number (set by the shell script loop)",
     )
     parser.add_argument(
         "--state_encoder_lr",
@@ -968,13 +948,14 @@ if __name__ == "__main__":
         dataset=lp.extract(args),
         opt=op.extract(args),
         pipe=pp.extract(args),
-        num_episodes=args.num_episodes,
-        scene_list=args.scene_list,
         policy_backbone=args.policy_backbone,
         use_context=use_context,
         train_state_encoder_flag=train_se,
         load_state_encoder_path=args.load_state_encoder,
         load_ppo_policy_path=args.load_ppo_policy,
+        log_dir=args.log_dir,
+        episode=args.episode,
+        epoch=args.epoch,
         tb_writer=tb_writer,
         state_encoder_lr_override=args.state_encoder_lr,
         device="cuda",
