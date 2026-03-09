@@ -12,11 +12,13 @@ import sys
 import uuid
 from collections import namedtuple
 from random import randint
+from time import time
 from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from argparse import ArgumentParser, Namespace
 from torchvision.transforms.functional import resize, normalize
 from pggs.config import PGGSConfig
@@ -24,7 +26,9 @@ from pggs.config import PGGSConfig
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from gaussian_renderer import render
 from scene import Scene, GaussianModel
+from tqdm import tqdm
 from utils.general_utils import safe_state
+from utils.image_utils import psnr
 from utils.loss_utils import l1_loss, ssim
 from pggs.state_encoder import StateEncoder
 from pggs.ppo_policy import PPOActorCritic
@@ -167,6 +171,8 @@ def run_episode(
         scene = Scene(dataset, gaussians)
         gaussians.training_setup(opt)
 
+    print(f"Number of points at initialisation: {gaussians.get_xyz.shape[0]}")
+
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device=device)
 
@@ -186,7 +192,17 @@ def run_episode(
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
 
+    # ── Logging state ─────────────────────────────────────────────────────────
+    ema_loss_for_log = 0.0
+    iter_start = torch.cuda.Event(enable_timing=True)
+    iter_end = torch.cuda.Event(enable_timing=True)
+    episode_start = time()
+
+    progress_bar = tqdm(range(1, opt.iterations + 1), desc="Episode progress")
+
     for iteration in range(1, opt.iterations + 1):
+        iter_start.record()
+
         gaussians.update_learning_rate(iteration)
 
         if not opt.optim_pose:
@@ -285,6 +301,18 @@ def run_episode(
                 )
             )
 
+            # ── Phase log ─────────────────────────────────────────────────────
+            tqdm.write(
+                f"\n[ITER {iteration}] Phase {phase_counter} "
+                f"| Avg SSIM loss: {avg_ssim:.6f}  Avg L1 loss: {avg_l1:.6f}"
+            )
+            tqdm.write(
+                f"  LR scaling: {action.detach().cpu().numpy()}"
+            )
+            tqdm.write(
+                f"  KonIQ++ reward: {reward:.4f}  Value: {value.item():.4f}"
+            )
+
             phase_counter += 1
             views_in_phase = 0
             phase_ssim_losses = []
@@ -319,9 +347,45 @@ def run_episode(
         phase_l1_losses.append(Ll1.item())
         views_in_phase += 1
 
+        iter_end.record()
+
+        with torch.no_grad():
+            ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+
+            if iteration % 10 == 0:
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.7f}"})
+                progress_bar.update(10)
+
+            # Periodic PSNR evaluation
+            if iteration % 500 == 0 or iteration == opt.iterations:
+                torch.cuda.empty_cache()
+                train_cameras = scene.getTrainCameras()
+                l1_eval = 0.0
+                psnr_eval = 0.0
+                for cam in train_cameras:
+                    cam_pose = gaussians.get_RT(cam.uid)
+                    rendered = torch.clamp(
+                        render(cam, gaussians, pipe, background, camera_pose=cam_pose)["render"],
+                        0.0, 1.0,
+                    )
+                    gt = torch.clamp(cam.original_image.to(device), 0.0, 1.0)
+                    l1_eval += l1_loss(rendered, gt).mean().double()
+                    psnr_eval += psnr(rendered, gt).mean().double()
+                l1_eval /= len(train_cameras)
+                psnr_eval /= len(train_cameras)
+                tqdm.write(
+                    f"[ITER {iteration}] Eval train: L1 {l1_eval:.5f}  PSNR {psnr_eval:.2f}"
+                )
+                torch.cuda.empty_cache()
+
         if iteration < opt.iterations:
             gaussians.optimizer.step()
             gaussians.optimizer.zero_grad(set_to_none=True)
+
+    progress_bar.close()
+
+    episode_time = time() - episode_start
+    print(f"Episode completed in {episode_time:.1f}s  |  {phase_counter} phases collected")
 
     # Final reward after the last iteration
     final_reward = evaluate_with_koniq(
@@ -335,6 +399,8 @@ def run_episode(
         b=koniq_b,
         device=device,
     )
+
+    print(f"Final KonIQ++ reward: {final_reward:.4f}")
 
     return rollout, final_reward
 
@@ -423,7 +489,7 @@ def ppo_update(
     policy.train()
 
     old_log_probs = torch.stack([t.log_prob for t in rollout]).to(device)  # [T]
-    old_actions = torch.stack([t.action for t in rollout]).to(device)      # [T, action_dim]
+    old_actions = torch.stack([t.action for t in rollout]).to(device)  # [T, action_dim]
     advantages_d = advantages.to(device)
     returns_d = returns.to(device)
 
@@ -435,7 +501,9 @@ def ppo_update(
     # When encoder is frozen the state sequence is identical every epoch —
     # build it once outside the loop.
     if not train_state_encoder:
-        all_states = torch.stack([t.state for t in rollout]).to(device)  # [T, state_dim]
+        all_states = torch.stack([t.state for t in rollout]).to(
+            device
+        )  # [T, state_dim]
 
     total_policy_loss = 0.0
     total_value_loss = 0.0
@@ -455,11 +523,14 @@ def ppo_update(
         # ── Full-sequence PPO loss (single backward) ───────────────────────────
         ratio = torch.exp(log_probs_all - old_log_probs.detach())
         surr1 = ratio * advantages_d
-        surr2 = torch.clamp(
-            ratio,
-            1.0 - pggs_config.ppo_clip_epsilon,
-            1.0 + pggs_config.ppo_clip_epsilon,
-        ) * advantages_d
+        surr2 = (
+            torch.clamp(
+                ratio,
+                1.0 - pggs_config.ppo_clip_epsilon,
+                1.0 + pggs_config.ppo_clip_epsilon,
+            )
+            * advantages_d
+        )
         policy_loss = -torch.min(surr1, surr2).mean()
         value_loss = nn.functional.mse_loss(values_all, returns_d)
         total_loss = (
@@ -555,7 +626,9 @@ def _build_all_states(
     for t in rollout:
         gf = t.gaussian_features.to(device)  # [N, feat_dim]
         ctx = t.context.to(device)  # [3]
-        gauss_state = _run_gaussian_encoder(state_encoder, gf)  # [3 * d_model]
+        gauss_state = grad_checkpoint(
+            _run_gaussian_encoder, state_encoder, gf, use_reentrant=False
+        )  # [3 * d_model]
         s = (
             torch.cat([gauss_state, ctx], dim=0)
             if state_encoder.use_context
@@ -650,13 +723,17 @@ def training_ppo(
 
     if load_state_encoder_path and os.path.exists(load_state_encoder_path):
         print(f"Loading state encoder from {load_state_encoder_path}")
-        ckpt = torch.load(load_state_encoder_path, map_location=device)
+        ckpt = torch.load(
+            load_state_encoder_path, map_location=device, weights_only=False
+        )
         state_key = "state_encoder" if "state_encoder" in ckpt else None
         state_encoder.load_state_dict(ckpt[state_key] if state_key else ckpt)
         print("State encoder loaded.")
     else:
         if load_state_encoder_path:
-            print(f"Warning: state encoder checkpoint not found at {load_state_encoder_path}")
+            print(
+                f"Warning: state encoder checkpoint not found at {load_state_encoder_path}"
+            )
         print("Initialising state encoder from scratch.")
 
     if not train_state_encoder_flag:
@@ -699,7 +776,7 @@ def training_ppo(
     # Load policy weights + optimizer state (Adam momentum carries across calls)
     if load_ppo_policy_path and os.path.exists(load_ppo_policy_path):
         print(f"Loading PPO policy from {load_ppo_policy_path}")
-        ckpt = torch.load(load_ppo_policy_path, map_location=device)
+        ckpt = torch.load(load_ppo_policy_path, map_location=device, weights_only=False)
         policy_key = "policy" if "policy" in ckpt else None
         policy.load_state_dict(ckpt[policy_key] if policy_key else ckpt)
         if "optimizer" in ckpt:
@@ -716,16 +793,26 @@ def training_ppo(
         and load_state_encoder_path
         and os.path.exists(load_state_encoder_path)
     ):
-        ckpt_se = torch.load(load_state_encoder_path, map_location=device)
+        ckpt_se = torch.load(
+            load_state_encoder_path, map_location=device, weights_only=False
+        )
         if "optimizer" in ckpt_se and ckpt_se["optimizer"] is not None:
-            state_encoder_optimizer.load_state_dict(ckpt_se["optimizer"])
+            try:
+                state_encoder_optimizer.load_state_dict(ckpt_se["optimizer"])
+            except ValueError:
+                print(
+                    "Warning: state encoder optimizer state dict is incompatible "
+                    "(architecture changed?). Starting optimizer from scratch."
+                )
 
     # ── KonIQ++ model ─────────────────────────────────────────────────────────
     from koniqplusplus.IQAmodel import Model_Joint
 
     print(f"Loading KonIQ++ model from {pggs_config.koniq_model_path} ...")
     koniq_model = Model_Joint().to(device)
-    koniq_ckpt = torch.load(pggs_config.koniq_model_path, map_location=device)
+    koniq_ckpt = torch.load(
+        pggs_config.koniq_model_path, map_location=device, weights_only=False
+    )
     koniq_model.load_state_dict(koniq_ckpt["model"])
     koniq_k = koniq_ckpt["k"]
     koniq_b = koniq_ckpt["b"]
@@ -751,7 +838,9 @@ def training_ppo(
         device=device,
     )
 
-    print(f"  {len(rollout)} phases collected, final KonIQ++ reward = {final_reward:.4f}")
+    print(
+        f"  {len(rollout)} phases collected, final KonIQ++ reward = {final_reward:.4f}"
+    )
 
     losses = {}
     if len(rollout) > 0:
@@ -786,7 +875,9 @@ def training_ppo(
     scene_label = "/".join(src_parts[-2:]) if len(src_parts) >= 2 else src_parts[-1]
     with open(csv_path, "a") as _f:
         if write_header:
-            _f.write("episode,epoch,scene,policy_loss,value_loss,entropy,final_reward\n")
+            _f.write(
+                "episode,epoch,scene,policy_loss,value_loss,entropy,final_reward\n"
+            )
         _f.write(
             f"{episode},{epoch},{scene_label},"
             f"{losses.get('policy_loss', float('nan')):.6f},"
