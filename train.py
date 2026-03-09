@@ -120,6 +120,7 @@ def training(
     # Initialize PGGS components if enabled
     state_encoder = None
     policy_network = None
+    policy_hidden = None  # per-scene GRU hidden state (None for Transformer)
     phase_counter = 0
     views_in_current_phase = 0
 
@@ -127,58 +128,65 @@ def training(
         print("Initializing PGGS (Policy-Guided Gaussian Splatting)...")
 
         from pggs.state_encoder import StateEncoder
-        from pggs.policy_network import PolicyNetwork
-        from pggs.utils import calculate_lpips_reward, apply_lr_scaling
+        from pggs.ppo_policy import PPOActorCritic
+        from pggs.utils import apply_lr_scaling
 
-        # Initialize state encoder
+        # Initialize state encoder (inference only)
         state_encoder = StateEncoder(
             num_inducing_vectors=pggs_config.num_inducing_vectors,
             d_model=pggs_config.state_d_model,
             num_heads=pggs_config.state_num_heads,
             dropout=pggs_config.state_dropout,
             sh_degree=dataset.sh_degree,
+            use_context=pggs_config.use_context,
         ).to("cuda")
 
-        state_encoder.eval()  # Inference mode only
+        state_encoder.eval()
 
-        # Initialize policy network
-        policy_network = PolicyNetwork(
+        # Initialize PPO actor-critic (inference only — deterministic mean action)
+        policy_network = PPOActorCritic(
             state_dim=state_encoder.get_output_dim(),
-            num_lr_params=pggs_config.num_lr_params,
-            n_embd=pggs_config.policy_n_embd,
-            n_layer=pggs_config.policy_n_layer,
-            n_head=pggs_config.policy_n_head,
-            n_inner=pggs_config.policy_n_inner,
-            activation=pggs_config.policy_activation,
-            n_positions=pggs_config.policy_n_positions,
-            resid_pdrop=pggs_config.policy_resid_pdrop,
-            attn_pdrop=pggs_config.policy_attn_pdrop,
-            sequence_length=pggs_config.policy_sequence_length,
+            action_dim=pggs_config.num_lr_params,
+            backbone=pggs_config.policy_backbone,
+            hidden_dim=pggs_config.ppo_hidden_dim,
+            gru_num_layers=pggs_config.gru_num_layers,
+            gru_dropout=pggs_config.gru_dropout,
+            transformer_n_heads=pggs_config.transformer_n_heads,
+            transformer_n_layers=pggs_config.transformer_n_layers,
+            transformer_ffn_dim=pggs_config.transformer_ffn_dim,
+            transformer_dropout=pggs_config.transformer_dropout,
+            transformer_max_seq_len=pggs_config.transformer_seq_len,
             device="cuda",
         )
 
-        policy_network.eval()  # Inference mode only
+        policy_network.eval()
 
-        # Try to load pre-trained weights
+        # Initialise per-scene hidden state
+        policy_hidden = policy_network.init_hidden()
+
+        # Load pre-trained weights
         state_encoder_path = os.path.join(
             dataset.model_path, pggs_config.state_encoder_checkpoint
         )
-
-        policy_network_path = os.path.join(
-            dataset.model_path, pggs_config.policy_network_checkpoint
+        ppo_policy_path = os.path.join(
+            dataset.model_path, pggs_config.ppo_policy_checkpoint
         )
 
         if os.path.exists(state_encoder_path):
             print("Loading pre-trained state encoder")
-            state_encoder.load_state_dict(torch.load(state_encoder_path))
+            ckpt = torch.load(state_encoder_path, map_location="cuda")
+            se_key = "state_encoder" if "state_encoder" in ckpt else None
+            state_encoder.load_state_dict(ckpt[se_key] if se_key else ckpt)
         else:
             print(f"Warning: State encoder not found at {state_encoder_path}")
 
-        if os.path.exists(policy_network_path):
-            print("Loading pre-trained policy network")
-            policy_network.load_state_dict(torch.load(policy_network_path))
+        if os.path.exists(ppo_policy_path):
+            print("Loading pre-trained PPO policy")
+            ckpt = torch.load(ppo_policy_path, map_location="cuda")
+            pol_key = "policy" if "policy" in ckpt else None
+            policy_network.load_state_dict(ckpt[pol_key] if pol_key else ckpt)
         else:
-            print(f"Warning: Policy network not found at {policy_network_path}")
+            print(f"Warning: PPO policy not found at {ppo_policy_path}")
 
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -224,44 +232,28 @@ def training(
         if iteration % 1000 == 0:
             gaussians.oneupSHdegree()
 
-        # PGGS: Check if phase is complete and apply policy update
+        # PGGS: Check if phase is complete and apply policy inference
         if (
             pggs_config.use_pggs
             and iteration >= pggs_config.start_iteration
             and views_in_current_phase >= pggs_config.phase_length
         ):
-            # Check if we should apply update based on phase counter
             if phase_counter % pggs_config.update_frequency == 0:
-                print(f"\n[ITER {iteration}]: Applying policy update ({phase_counter})")
+                print(f"\n[ITER {iteration}]: Applying policy action ({phase_counter})")
 
-                from pggs.utils import calculate_lpips_reward, apply_lr_scaling
+                avg_ssim_loss = (
+                    sum(phase_ssim_losses) / len(phase_ssim_losses)
+                    if phase_ssim_losses
+                    else 0.0
+                )
+                avg_l1_loss = (
+                    sum(phase_l1_losses) / len(phase_l1_losses)
+                    if phase_l1_losses
+                    else 0.0
+                )
 
+                # Encode current state (no gradient — inference only)
                 with torch.no_grad():
-                    # Calculate reward based on LPIPS
-                    reward = calculate_lpips_reward(
-                        gaussians=gaussians,
-                        scene=scene,
-                        render_fn=render,
-                        pipe=pipe,
-                        background=background,
-                        net_type="vgg",
-                        device="cuda",
-                    )
-
-                    # Calculate average losses for the completed phase
-                    avg_ssim_loss = (
-                        sum(phase_ssim_losses) / len(phase_ssim_losses)
-                        if phase_ssim_losses
-                        else 0.0
-                    )
-
-                    avg_l1_loss = (
-                        sum(phase_l1_losses) / len(phase_l1_losses)
-                        if phase_l1_losses
-                        else 0.0
-                    )
-
-                    # Encode current state
                     state = state_encoder(
                         gaussians=gaussians,
                         iteration=iteration,
@@ -270,30 +262,24 @@ def training(
                         avg_l1_loss=avg_l1_loss,
                     )
 
-                    # Get actions from policy network
-                    actions = policy_network(
-                        state=state,
-                        return_to_go=reward,
-                        use_sequence=True,
+                    # Deterministic mean action; hidden propagated across phases
+                    actions, policy_hidden = policy_network.get_action_deterministic(
+                        state, policy_hidden
                     )
 
-                    # Apply learning rate scaling to optimizer
+                    # Apply learning rate scaling to Gaussian optimizer
                     apply_lr_scaling(
                         optimizer=gaussians.optimizer,
                         action=actions,
                         group_mapping=pggs_config.group_mapping,
                     )
 
-                    # Log PGGS update information
                     print(f"  Phase {phase_counter}")
-                    print(f"  Reward (negative LPIPS): {reward:.6f}")
                     print(f"  Avg SSIM loss: {avg_ssim_loss:.6f}")
-                    print(f"  Avg L1 loss: {avg_l1_loss:.6f}")
+                    print(f"  Avg L1 loss:   {avg_l1_loss:.6f}")
                     print(f"  LR scaling factors: {actions.cpu().numpy()}")
 
-                    # Log to tensorboard if available
                     if tb_writer:
-                        tb_writer.add_scalar("pggs/reward", reward, iteration)
                         tb_writer.add_scalar(
                             "pggs/avg_ssim_loss", avg_ssim_loss, iteration
                         )
@@ -301,9 +287,8 @@ def training(
                         tb_writer.add_scalar(
                             "pggs/phase_counter", phase_counter, iteration
                         )
-
                         for idx, param_name in enumerate(
-                            policy_network.get_lr_param_names()
+                            policy_network._get_lr_param_names()
                         ):
                             tb_writer.add_scalar(
                                 f"pggs/lr_scale_{param_name}",

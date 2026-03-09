@@ -19,6 +19,7 @@ class StateEncoder(nn.Module):
         num_heads: int = 8,
         dropout: float = 0.1,
         sh_degree: int = 3,
+        use_context: bool = True,
     ):
         """
         Args:
@@ -27,8 +28,15 @@ class StateEncoder(nn.Module):
             num_heads: Number of attention heads
             dropout: Dropout rate
             sh_degree: Spherical harmonics degree
+            use_context: If True, appends 3 scalar context features
+                         (normalized iteration, avg_ssim_loss, avg_l1_loss)
+                         to the Gaussian encoding. Output dim = 3*d_model + 3.
+                         If False, returns only the Gaussian encoding.
+                         Output dim = 3*d_model.
         """
         super().__init__()
+
+        self.use_context = use_context
 
         # Gaussian encoder
         self.gaussian_encoder = GaussianStateEncoder(
@@ -42,8 +50,10 @@ class StateEncoder(nn.Module):
         # Context feature dimension: iteration (1) + ssim_loss (1) + l1_loss (1)
         self.context_dim = 3
 
-        # Final output dimension: Gaussian encoding + context
-        self.output_dim = self.gaussian_encoder.get_output_dim() + self.context_dim
+        # Final output dimension: Gaussian encoding + optional context
+        self.output_dim = self.gaussian_encoder.get_output_dim() + (
+            self.context_dim if use_context else 0
+        )
 
     def _encode_context(
         self,
@@ -107,6 +117,9 @@ class StateEncoder(nn.Module):
         """
         # Encode Gaussians
         gaussian_state = self.gaussian_encoder(gaussians)  # [3 * d_model]
+
+        if not self.use_context:
+            return gaussian_state
 
         # Encode context
         context_state = self._encode_context(
