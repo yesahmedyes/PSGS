@@ -3,12 +3,12 @@
 # Change the absolute path first!
 DATA_ROOT_DIR="/home/ubuntu/ahmed-etri"
 
-OUTPUT_PPO_DIR="output_ppo_training"
+OUTPUT_PPO_DIR="output_ppo_training_1"
 EPOCHS=100
 
-# Checkpoints (shared across all calls — overwritten each episode)
-STATE_ENCODER_CHECKPOINT="checkpoints/state_encoder.pth"
-PPO_POLICY_CHECKPOINT="checkpoints/ppo_policy.pth"
+# State encoder is frozen — only the PPO policy checkpoint evolves
+STATE_ENCODER_CHECKPOINT="checkpoints/state_encoder_static.pth"
+PPO_POLICY_CHECKPOINT="checkpoints/ppo_policy_1.pth"
 
 # Shared log directory — ppo_losses.csv accumulates here across all episodes
 LOG_DIR="${OUTPUT_PPO_DIR}/logs"
@@ -45,7 +45,7 @@ GS_TRAIN_ITERS=(
 N_SCENES=${#SCENES[@]}
 
 echo "=========================================="
-echo "PPO Policy Training"
+echo "PPO Policy Training (frozen state encoder)"
 echo "Total Epochs  : ${EPOCHS}"
 echo "Scenes        : ${SCENES[*]}"
 echo "N-Views       : ${N_VIEWS[*]}"
@@ -90,7 +90,7 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
                     > "${MODEL_PATH}/01_init_geo.log" 2>&1
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] init_geo done. Log: ${MODEL_PATH}/01_init_geo.log"
 
-                # ── (2) PPO single-episode training ────────────────────────────
+                # ── (2) PPO single-episode training (state encoder frozen) ─────
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] train_ppo (episode ${EPISODE}) ..."
                 CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python ./train_ppo.py \
                     -s "${SOURCE_PATH}" \
@@ -101,9 +101,8 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
                     --pp_optimizer \
                     --optim_pose \
                     --policy_backbone transformer \
-                    --train_state_encoder \
+                    --no_train_state_encoder \
                     --load_state_encoder "${STATE_ENCODER_CHECKPOINT}" \
-                    --save_state_encoder "${STATE_ENCODER_CHECKPOINT}" \
                     --load_ppo_policy "${PPO_POLICY_CHECKPOINT}" \
                     --log_dir "${LOG_DIR}" \
                     --epoch "${EPOCH}" \

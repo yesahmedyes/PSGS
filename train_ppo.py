@@ -306,12 +306,8 @@ def run_episode(
                 f"\n[ITER {iteration}] Phase {phase_counter} "
                 f"| Avg SSIM loss: {avg_ssim:.6f}  Avg L1 loss: {avg_l1:.6f}"
             )
-            tqdm.write(
-                f"  LR scaling: {action.detach().cpu().numpy()}"
-            )
-            tqdm.write(
-                f"  KonIQ++ reward: {reward:.4f}  Value: {value.item():.4f}"
-            )
+            tqdm.write(f"  LR scaling: {action.detach().cpu().numpy()}")
+            tqdm.write(f"  KonIQ++ reward: {reward:.4f}  Value: {value.item():.4f}")
 
             phase_counter += 1
             views_in_phase = 0
@@ -365,8 +361,11 @@ def run_episode(
                 for cam in train_cameras:
                     cam_pose = gaussians.get_RT(cam.uid)
                     rendered = torch.clamp(
-                        render(cam, gaussians, pipe, background, camera_pose=cam_pose)["render"],
-                        0.0, 1.0,
+                        render(cam, gaussians, pipe, background, camera_pose=cam_pose)[
+                            "render"
+                        ],
+                        0.0,
+                        1.0,
                     )
                     gt = torch.clamp(cam.original_image.to(device), 0.0, 1.0)
                     l1_eval += l1_loss(rendered, gt).mean().double()
@@ -385,7 +384,9 @@ def run_episode(
     progress_bar.close()
 
     episode_time = time() - episode_start
-    print(f"Episode completed in {episode_time:.1f}s  |  {phase_counter} phases collected")
+    print(
+        f"Episode completed in {episode_time:.1f}s  |  {phase_counter} phases collected"
+    )
 
     # Final reward after the last iteration
     final_reward = evaluate_with_koniq(
@@ -677,6 +678,7 @@ def training_ppo(
     epoch: int,
     tb_writer,
     state_encoder_lr_override: Optional[float] = None,
+    save_state_encoder_path: Optional[str] = None,
     device: str = "cuda",
 ):
     """
@@ -704,6 +706,8 @@ def training_ppo(
         epoch:                    Current epoch number (passed by shell)
         tb_writer:                TensorBoard SummaryWriter or None
         state_encoder_lr_override: Override for pggs_config.state_encoder_lr
+        save_state_encoder_path:  Override save path for the state encoder checkpoint.
+                                  Defaults to pggs_config.state_encoder_checkpoint.
         device:                   Torch device string
     """
     pggs_config = PGGSConfig()
@@ -897,6 +901,7 @@ def training_ppo(
         episode=episode,
         pggs_config=pggs_config,
         train_se=train_state_encoder_flag,
+        save_state_encoder_path=save_state_encoder_path,
     )
 
     print("\nEpisode complete.")
@@ -910,6 +915,7 @@ def _save_checkpoints(
     episode: int,
     pggs_config: PGGSConfig,
     train_se: bool,
+    save_state_encoder_path: Optional[str] = None,
 ):
     os.makedirs("checkpoints", exist_ok=True)
 
@@ -925,6 +931,7 @@ def _save_checkpoints(
     print(f"  PPO policy saved → {pggs_config.ppo_policy_checkpoint}")
 
     if train_se:
+        se_save_path = save_state_encoder_path or pggs_config.state_encoder_checkpoint
         se_ckpt = {
             "state_encoder": state_encoder.state_dict(),
             "optimizer": state_encoder_optimizer.state_dict()
@@ -933,8 +940,9 @@ def _save_checkpoints(
             "episode": episode,
             "use_context": pggs_config.use_context,
         }
-        torch.save(se_ckpt, pggs_config.state_encoder_checkpoint)
-        print(f"  State encoder saved → {pggs_config.state_encoder_checkpoint}")
+        os.makedirs(os.path.dirname(se_save_path) or ".", exist_ok=True)
+        torch.save(se_ckpt, se_save_path)
+        print(f"  State encoder saved → {se_save_path}")
 
 
 if __name__ == "__main__":
@@ -980,6 +988,15 @@ if __name__ == "__main__":
         type=str,
         default=None,
         help="Path to pre-trained state encoder checkpoint",
+    )
+    parser.add_argument(
+        "--save_state_encoder",
+        type=str,
+        default=None,
+        help=(
+            "Path to save the state encoder checkpoint after each episode. "
+            "Defaults to pggs_config.state_encoder_checkpoint."
+        ),
     )
     parser.add_argument(
         "--load_ppo_policy",
@@ -1051,6 +1068,7 @@ if __name__ == "__main__":
         epoch=args.epoch,
         tb_writer=tb_writer,
         state_encoder_lr_override=args.state_encoder_lr,
+        save_state_encoder_path=args.save_state_encoder,
         device="cuda",
     )
 
