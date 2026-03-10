@@ -626,9 +626,11 @@ def _build_all_states(
     for t in rollout:
         gf = t.gaussian_features.to(device)  # [N, feat_dim]
         ctx = t.context.to(device)  # [3]
-        gauss_state = grad_checkpoint(
-            _run_gaussian_encoder, state_encoder, gf, use_reentrant=False
-        )  # [3 * d_model]
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            gauss_state = grad_checkpoint(
+                _run_gaussian_encoder, state_encoder, gf, use_reentrant=False
+            )  # [3 * d_model]
+        gauss_state = gauss_state.float()
         s = (
             torch.cat([gauss_state, ctx], dim=0)
             if state_encoder.use_context

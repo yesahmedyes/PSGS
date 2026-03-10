@@ -92,7 +92,7 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
 
                 # ── (2) PPO single-episode training ────────────────────────────
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] train_ppo (episode ${EPISODE}) ..."
-                CUDA_VISIBLE_DEVICES=0 python ./train_ppo.py \
+                CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python ./train_ppo.py \
                     -s "${SOURCE_PATH}" \
                     -m "${MODEL_PATH}" \
                     -r 1 \

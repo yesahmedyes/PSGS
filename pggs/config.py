@@ -53,7 +53,7 @@ class PGGSConfig:
     transformer_n_layers: int = 4
     transformer_ffn_dim: int = 512
     transformer_dropout: float = 0.1
-    transformer_seq_len: int = 64  # context window (rolling buffer length)
+    transformer_seq_len: int = 128  # context window (rolling buffer length)
 
     # ── PPO Hyperparameters ───────────────────────────────────────────────────
     ppo_clip_epsilon: float = 0.2
