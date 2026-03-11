@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(xargs cat)"
+      "Bash(xargs cat)",
+      "Bash(chmod +x /Users/ahmedharoon/Desktop/PSGS/scripts/train_dt.sh)",
+      "Bash(python -c \":*)"
     ]
   }
 }

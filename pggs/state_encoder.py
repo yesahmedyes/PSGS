@@ -259,11 +259,15 @@ class GaussianStateEncoder(nn.Module):
         queries = self.inducing_vectors.unsqueeze(0)  # [1, K, d_model]
         keys_values = gaussian_embedded.unsqueeze(0)  # [1, N, d_model]
 
-        # Cross-attention: inducing vectors attend to Gaussians
+        # Cross-attention: inducing vectors attend to Gaussians.
+        # need_weights=False triggers the memory-efficient SDPA path (Flash
+        # Attention) in PyTorch ≥ 2.0, which never materialises the full
+        # [1, num_heads, K, N] weight matrix.
         attn_output, _ = self.cross_attention(
             query=queries,
             key=keys_values,
             value=keys_values,
+            need_weights=False,
         )  # [1, K, d_model]
 
         # Layer norm

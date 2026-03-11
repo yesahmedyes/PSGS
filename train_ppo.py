@@ -591,7 +591,7 @@ def _run_gaussian_encoder(
     queries = enc.inducing_vectors.unsqueeze(0)  # [1, K, d_model]
     keys_values = embedded.unsqueeze(0)  # [1, N, d_model]
     attn_output, _ = enc.cross_attention(
-        query=queries, key=keys_values, value=keys_values
+        query=queries, key=keys_values, value=keys_values, need_weights=False
     )  # [1, K, d_model]
     attn_output = enc.layer_norm(attn_output).squeeze(0)  # [K, d_model]
 

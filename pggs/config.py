@@ -76,6 +76,43 @@ class PGGSConfig:
 
     use_reward_normalization: bool = True
 
+    # ── Online Decision Transformer (ODT) ─────────────────────────────────────
+    # Architecture
+    odt_hidden_dim: int = 256
+    odt_n_heads: int = 4
+    odt_n_layers: int = 4
+    odt_ffn_dim: int = 512
+    odt_dropout: float = 0.1
+    odt_max_episode_len: int = 128  # max phases per episode
+
+    # Replay buffer
+    odt_replay_buffer_size: int = 100  # max episodes in buffer
+    odt_rtg_discount: float = 1.0  # discount for RTG computation
+
+    # Training
+    odt_updates_per_episode: int = 10  # gradient steps per collected episode
+    odt_batch_size: int = 8  # episodes per training batch
+    odt_context_len: int = 64  # max sequence length for training crops
+    odt_lr: float = 1e-4
+    odt_weight_decay: float = 1e-4
+    odt_gradient_clip: float = 0.25
+
+    # Exploration / RTG targeting
+    odt_target_rtg: float = 0.8  # initial target RTG for data collection
+    odt_rtg_adapt: bool = True  # adapt target RTG based on observed returns
+    odt_rtg_adapt_factor: float = 1.1  # target = best_return * factor
+
+    # Loss
+    odt_entropy_coeff: float = 0.01
+    odt_use_weighted_sampling: bool = True
+
+    # Checkpoints
+    odt_policy_checkpoint: str = "checkpoints/odt_policy.pth"
+    odt_replay_buffer_checkpoint: str = "checkpoints/replay_buffer.pth"
+
+    # Warmup
+    odt_warmup_episodes: int = 5  # collect before starting ODT updates
+
     # ── Misc ──────────────────────────────────────────────────────────────────
     koniq_model_path: str = "koniqplusplus/pretrained_model"
     save_policy_checkpoints: bool = True
