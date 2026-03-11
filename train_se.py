@@ -331,13 +331,14 @@ def training(
         from pggs.state_encoder import StateEncoder
         from koniqplusplus.IQAmodel import Model_Joint
 
-        # Initialize state encoder
+        # Initialize state encoder (context-free: only the GaussianStateEncoder is trained)
         state_encoder = StateEncoder(
             num_inducing_vectors=pggs_config.num_inducing_vectors,
             d_model=pggs_config.state_d_model,
             num_heads=pggs_config.state_num_heads,
             dropout=pggs_config.state_dropout,
             sh_degree=dataset.sh_degree,
+            use_context=False,
         ).to("cuda")
 
         # Initialize prediction head
@@ -635,6 +636,7 @@ def training(
                 "state_num_heads": pggs_config.state_num_heads,
                 "state_dropout": pggs_config.state_dropout,
                 "sh_degree": dataset.sh_degree,
+                "use_context": False,
             },
         }
 

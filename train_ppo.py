@@ -728,13 +728,14 @@ def training_ppo(
         use_context=use_context,
     ).to(device)
 
+    se_ckpt = None
     if load_state_encoder_path and os.path.exists(load_state_encoder_path):
         print(f"Loading state encoder from {load_state_encoder_path}")
-        ckpt = torch.load(
+        se_ckpt = torch.load(
             load_state_encoder_path, map_location=device, weights_only=False
         )
-        state_key = "state_encoder" if "state_encoder" in ckpt else None
-        state_encoder.load_state_dict(ckpt[state_key] if state_key else ckpt)
+        state_key = "state_encoder" if "state_encoder" in se_ckpt else None
+        state_encoder.load_state_dict(se_ckpt[state_key] if state_key else se_ckpt)
         print("State encoder loaded.")
     else:
         if load_state_encoder_path:
@@ -795,21 +796,15 @@ def training_ppo(
         print("Initialising PPO policy from scratch.")
 
     # Load state encoder optimizer state (only relevant when fine-tuning)
-    if (
-        train_state_encoder_flag
-        and load_state_encoder_path
-        and os.path.exists(load_state_encoder_path)
-    ):
-        ckpt_se = torch.load(
-            load_state_encoder_path, map_location=device, weights_only=False
-        )
-        if "optimizer" in ckpt_se and ckpt_se["optimizer"] is not None:
+    if train_state_encoder_flag and se_ckpt is not None:
+        if "optimizer" in se_ckpt and se_ckpt["optimizer"] is not None:
             try:
-                state_encoder_optimizer.load_state_dict(ckpt_se["optimizer"])
+                state_encoder_optimizer.load_state_dict(se_ckpt["optimizer"])
             except ValueError:
                 print(
                     "Warning: state encoder optimizer state dict is incompatible "
-                    "(architecture changed?). Starting optimizer from scratch."
+                    "(likely loaded from a train_se.py checkpoint whose optimizer "
+                    "also covered the prediction head). Starting optimizer from scratch."
                 )
 
     # ── KonIQ++ model ─────────────────────────────────────────────────────────
