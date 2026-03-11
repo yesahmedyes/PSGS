@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class PGGSConfig:
     use_pggs: bool = True
 
-    phase_length: int = 12
+    phase_length: int = 10
     update_frequency: int = 1  # How many phases between policy updates.
 
     start_iteration: int = 0

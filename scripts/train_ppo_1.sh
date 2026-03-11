@@ -80,7 +80,7 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
 
                 # ── (1) Co-visible Global Geometry Initialisation ──────────────
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] init_geo ..."
-                CUDA_VISIBLE_DEVICES=0 python -W ignore ./init_geo.py \
+                CUDA_VISIBLE_DEVICES=1 python -W ignore ./init_geo.py \
                     -s "${SOURCE_PATH}" \
                     -m "${MODEL_PATH}" \
                     --n_views "${N_VIEW}" \
@@ -92,7 +92,7 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
 
                 # ── (2) PPO single-episode training (state encoder frozen) ─────
                 echo "[$(date '+%Y-%m-%d %H:%M:%S')] train_ppo (episode ${EPISODE}) ..."
-                CUDA_VISIBLE_DEVICES=0 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python ./train_ppo.py \
+                CUDA_VISIBLE_DEVICES=1 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True python ./train_ppo.py \
                     -s "${SOURCE_PATH}" \
                     -m "${MODEL_PATH}" \
                     -r 1 \
@@ -104,6 +104,7 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
                     --no_train_state_encoder \
                     --load_state_encoder "${STATE_ENCODER_CHECKPOINT}" \
                     --load_ppo_policy "${PPO_POLICY_CHECKPOINT}" \
+                    --save_ppo_policy "${PPO_POLICY_CHECKPOINT}" \
                     --log_dir "${LOG_DIR}" \
                     --epoch "${EPOCH}" \
                     --episode "${EPISODE}" \

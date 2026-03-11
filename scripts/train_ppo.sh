@@ -105,6 +105,7 @@ for EPOCH in $(seq 1 ${EPOCHS}); do
                     --load_state_encoder "${STATE_ENCODER_CHECKPOINT}" \
                     --save_state_encoder "${STATE_ENCODER_CHECKPOINT}" \
                     --load_ppo_policy "${PPO_POLICY_CHECKPOINT}" \
+                    --save_ppo_policy "${PPO_POLICY_CHECKPOINT}" \
                     --log_dir "${LOG_DIR}" \
                     --epoch "${EPOCH}" \
                     --episode "${EPISODE}" \

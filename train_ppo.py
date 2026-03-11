@@ -679,6 +679,7 @@ def training_ppo(
     tb_writer,
     state_encoder_lr_override: Optional[float] = None,
     save_state_encoder_path: Optional[str] = None,
+    save_ppo_policy_path: Optional[str] = None,
     device: str = "cuda",
 ):
     """
@@ -902,6 +903,7 @@ def training_ppo(
         pggs_config=pggs_config,
         train_se=train_state_encoder_flag,
         save_state_encoder_path=save_state_encoder_path,
+        save_ppo_policy_path=save_ppo_policy_path,
     )
 
     print("\nEpisode complete.")
@@ -916,6 +918,7 @@ def _save_checkpoints(
     pggs_config: PGGSConfig,
     train_se: bool,
     save_state_encoder_path: Optional[str] = None,
+    save_ppo_policy_path: Optional[str] = None,
 ):
     os.makedirs("checkpoints", exist_ok=True)
 
@@ -927,8 +930,10 @@ def _save_checkpoints(
         "hidden_dim": pggs_config.ppo_hidden_dim,
         "action_dim": pggs_config.num_lr_params,
     }
-    torch.save(policy_ckpt, pggs_config.ppo_policy_checkpoint)
-    print(f"  PPO policy saved → {pggs_config.ppo_policy_checkpoint}")
+    ppo_save_path = save_ppo_policy_path or pggs_config.ppo_policy_checkpoint
+    os.makedirs(os.path.dirname(ppo_save_path) or ".", exist_ok=True)
+    torch.save(policy_ckpt, ppo_save_path)
+    print(f"  PPO policy saved → {ppo_save_path}")
 
     if train_se:
         se_save_path = save_state_encoder_path or pggs_config.state_encoder_checkpoint
@@ -1005,6 +1010,15 @@ if __name__ == "__main__":
         help="Path to pre-trained PPO policy checkpoint",
     )
     parser.add_argument(
+        "--save_ppo_policy",
+        type=str,
+        default=None,
+        help=(
+            "Path to save the PPO policy checkpoint after each update. "
+            "Defaults to pggs_config.ppo_policy_checkpoint."
+        ),
+    )
+    parser.add_argument(
         "--log_dir",
         type=str,
         required=True,
@@ -1069,6 +1083,7 @@ if __name__ == "__main__":
         tb_writer=tb_writer,
         state_encoder_lr_override=args.state_encoder_lr,
         save_state_encoder_path=args.save_state_encoder,
+        save_ppo_policy_path=args.save_ppo_policy,
         device="cuda",
     )
 
